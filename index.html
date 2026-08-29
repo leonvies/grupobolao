@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full bg-gray-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lotofácil — Histórico e Sombras</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #c1c1c1;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #a8a8a8;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col bg-gray-50 text-gray-800 antialiased overflow-hidden">
+
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-20 shadow-sm flex-shrink-0">
+    <div class="max-w-6xl mx-auto px-4 py-3 sm:py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div>
+        <h1 class="text-lg sm:text-xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-purple-600 inline-block animate-pulse"></span>
+          Lotofácil — Histórico e Regra de Sombras
+        </h1>
+        <div class="flex flex-wrap items-center gap-2 mt-0.5">
+          <p id="status-text" class="text-xs text-gray-500">Carregando dados da API pública...</p>
+          <span id="last-award-badge" class="hidden text-xs font-bold px-2.5 py-0.5 bg-amber-100 text-amber-900 rounded-full border border-amber-300"></span>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 w-full sm:w-auto">
+        <input 
+          type="number" 
+          id="search-input" 
+          placeholder="Buscar concurso ex: 1" 
+          class="w-full sm:w-48 px-3 py-1.5 text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+        />
+        <button 
+          id="btn-scroll-top" 
+          title="Ir para o início"
+          class="px-3 py-1.5 text-xs font-semibold bg-gray-200 text-gray-700 hover:bg-gray-300 rounded-lg transition-colors flex-shrink-0"
+        >
+          Topo
+        </button>
+        <button 
+          id="btn-scroll-bottom" 
+          title="Ir para o final"
+          class="px-3 py-1.5 text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700 rounded-lg transition-colors flex-shrink-0"
+        >
+          Fim
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-6xl w-full mx-auto p-2 sm:p-4 flex flex-col overflow-hidden">
+    
+    <!-- Loading spinner -->
+    <div id="loading-spinner" class="my-auto flex flex-col items-center justify-center p-8 text-center">
+      <div class="w-10 h-10 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+      <p class="text-sm font-medium text-gray-700">Buscando resultados do concurso #1 até o atual...</p>
+      <p class="text-xs text-gray-400 mt-1">Aguarde alguns instantes enquanto processamos o histórico.</p>
+    </div>
+
+    <!-- Error container -->
+    <div id="error-message" class="hidden my-auto p-6 bg-red-50 border border-red-200 rounded-xl text-center max-w-md mx-auto shadow-sm">
+      <div class="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-3 font-bold text-lg">!</div>
+      <p class="text-red-800 font-semibold mb-1">Não foi possível carregar os dados da API</p>
+      <p class="text-xs text-red-600 mb-4">Ocorreu uma falha na comunicação. Clique abaixo para tentar novamente.</p>
+      <button 
+        onclick="loadLotofacilData()" 
+        class="px-4 py-2 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors shadow-sm"
+      >
+        Tentar Novamente
+      </button>
+    </div>
+
+    <!-- Virtualized ListView Container -->
+    <div id="listview-viewport" class="hidden flex-1 overflow-y-auto relative rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div id="listview-spacer" class="relative w-full">
+        <div id="listview-content" class="absolute top-0 left-0 right-0">
+          <!-- Dynamically populated items -->
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    let allDraws = [];
+    let filteredDraws = [];
+    const ITEM_HEIGHT = 175; // Height in pixels per draw card item
+    const BUFFER_ITEMS = 8;   // Render buffer items above/below viewport
+
+    // DOM Elements
+    const viewportEl = document.getElementById('listview-viewport');
+    const spacerEl = document.getElementById('listview-spacer');
+    const contentEl = document.getElementById('listview-content');
+    const statusTextEl = document.getElementById('status-text');
+    const lastAwardBadgeEl = document.getElementById('last-award-badge');
+    const loadingSpinnerEl = document.getElementById('loading-spinner');
+    const errorMessageEl = document.getElementById('error-message');
+    const searchInputEl = document.getElementById('search-input');
+    const btnScrollTop = document.getElementById('btn-scroll-top');
+    const btnScrollBottom = document.getElementById('btn-scroll-bottom');
+
+    async function loadLotofacilData() {
+      showLoading();
+
+      const endpoints = [
+        'https://loteriascaixa-api.herokuapp.com/api/lotofacil',
+        'https://raw.githubusercontent.com/guilhermeasn/loteria.json/master/data/lotofacil.json'
+      ];
+
+      let rawData = null;
+
+      for (const url of endpoints) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            rawData = await response.json();
+            if (rawData) break;
+          }
+        } catch (e) {
+          console.warn(`Falha ao conectar no endpoint ${url}:`, e);
+        }
+      }
+
+      if (!rawData) {
+        showError();
+        return;
+      }
+
+      try {
+        allDraws = parseLotofacilData(rawData);
+        
+        if (!allDraws.length) {
+          showError();
+          return;
+        }
+
+        // Calculate pattern matches and state transitions for all columns chronologically (#1 -> latest)
+        calculateShadowSequence(allDraws);
+
+        // Calculate delay (concursos sem acerto >= 11 pts) chronologically
+        let delayCounter = 0;
+        allDraws.forEach(item => {
+          if (item.totalHits >= 11) {
+            delayCounter = 0;
+            item.delay = 0;
+          } else {
+            delayCounter++;
+            item.delay = delayCounter;
+          }
+        });
+
+        // Find last draw with >= 11 points before reversing
+        const lastAwardDraw = [...allDraws].reverse().find(d => d.totalHits >= 11);
+        const latestDraw = allDraws[allDraws.length - 1];
+
+        // Invert to display newest / most recent contest first
+        allDraws.reverse();
+        filteredDraws = [...allDraws];
+
+        // Header statistics for scores (11 to 15 points)
+        const pts11 = allDraws.filter(d => d.totalHits === 11).length;
+        const pts12 = allDraws.filter(d => d.totalHits === 12).length;
+        const pts13 = allDraws.filter(d => d.totalHits === 13).length;
+        const pts14 = allDraws.filter(d => d.totalHits === 14).length;
+        const pts15 = allDraws.filter(d => d.totalHits === 15).length;
+
+        statusTextEl.textContent = `Total: ${allDraws.length} concursos | 11pt (${pts11}) | 12pt (${pts12}) | 13pt (${pts13}) | 14pt (${pts14}) | 15pt (${pts15})`;
+        
+        if (lastAwardDraw) {
+          const gap = latestDraw.concurso - lastAwardDraw.concurso;
+          const gapText = gap === 0 ? 'no concurso atual' : `há ${gap} concurso(s)`;
+          lastAwardBadgeEl.textContent = `🏆 Último ≥11 pts: Concurso #${lastAwardDraw.concurso} (${gapText})`;
+          lastAwardBadgeEl.classList.remove('hidden');
+        }
+
+        hideLoading();
+        setupVirtualList();
+      } catch (err) {
+        console.error("Erro no processamento dos dados:", err);
+        showError();
+      }
+    }
+
+    function parseLotofacilData(data) {
+      const results = [];
+
+      if (Array.isArray(data)) {
+        data.forEach(item => {
+          const concursoNum = parseInt(item.concurso || item.numero || item.id, 10);
+          const rawDezenas = item.dezenas || item.listaDezenas || item.resultado || item.numeros || [];
+          if (!isNaN(concursoNum) && Array.isArray(rawDezenas) && rawDezenas.length >= 15) {
+            // Sort dezenas strictly in numerical ascending order (01 to 25)
+            const sortedNumbers = rawDezenas
+              .map(n => parseInt(n, 10))
+              .filter(n => !isNaN(n))
+              .sort((a, b) => a - b)
+              .map(n => String(n).padStart(2, '0'));
+
+            if (sortedNumbers.length === 15) {
+              results.push({
+                concurso: concursoNum,
+                dezenas: sortedNumbers
+              });
+            }
+          }
+        });
+      } else if (typeof data === 'object' && data !== null) {
+        for (const [key, val] of Object.entries(data)) {
+          const concursoNum = parseInt(key, 10);
+          let rawDezenas = [];
+          if (Array.isArray(val)) {
+            rawDezenas = val;
+          } else if (typeof val === 'object' && val !== null) {
+            rawDezenas = val.dezenas || val.listaDezenas || val.resultado || val.numeros || [];
+          }
+          if (!isNaN(concursoNum) && Array.isArray(rawDezenas) && rawDezenas.length >= 15) {
+            const sortedNumbers = rawDezenas
+              .map(n => parseInt(n, 10))
+              .filter(n => !isNaN(n))
+              .sort((a, b) => a - b)
+              .map(n => String(n).padStart(2, '0'));
+
+            if (sortedNumbers.length === 15) {
+              results.push({
+                concurso: concursoNum,
+                dezenas: sortedNumbers
+              });
+            }
+          }
+        }
+      }
+
+      // Ensure chronological ordering from draw #1 to latest
+      results.sort((a, b) => a.concurso - b.concurso);
+      return results;
+    }
+
+    function calculateShadowSequence(draws) {
+      // Column rules:
+      // Cols 1,2,3: 01, 02, 05 <-> 02, 03, 05
+      const patternA_123 = ['01', '02', '05'];
+      const patternB_123 = ['02', '03', '05'];
+
+      // Cols 4,5,6: 06, 08, 09 <-> 06, 09, 10
+      const patternA_456 = ['06', '08', '09'];
+      const patternB_456 = ['06', '09', '10'];
+
+      // Cols 7,8,9: 11, 12, 14 <-> 11, 13, 15
+      const patternA_789 = ['11', '12', '14'];
+      const patternB_789 = ['11', '13', '15'];
+
+      // Cols 10,11,12: 17, 18, 19
+      const pattern_101112 = ['17', '18', '19'];
+
+      // Cols 13,14,15: 23, 24, 25 -> 22, 23, 25 -> 22, 23, 24 -> 21, 24, 25
+      const patternA_131415 = ['23', '24', '25'];
+      const patternB_131415 = ['22', '23', '25'];
+      const patternC_131415 = ['22', '23', '24'];
+      const patternD_131415 = ['21', '24', '25'];
+
+      let current123 = patternA_123;
+      let current456 = patternA_456;
+      let current789 = patternA_789;
+      let current101112 = pattern_101112;
+      let current131415 = patternA_131415;
+
+      draws.forEach(item => {
+        // Active target sequence for this draw (15 columns fully defined)
+        item.shadowTarget = [...current123, ...current456, ...current789, ...current101112, ...current131415];
+
+        // Match tests in sorted dezenas
+        const match123 = item.dezenas[0] === current123[0] &&
+                         item.dezenas[1] === current123[1] &&
+                         item.dezenas[2] === current123[2];
+
+        const match456 = item.dezenas[3] === current456[0] &&
+                         item.dezenas[4] === current456[1] &&
+                         item.dezenas[5] === current456[2];
+
+        const match789 = item.dezenas[6] === current789[0] &&
+                         item.dezenas[7] === current789[1] &&
+                         item.dezenas[8] === current789[2];
+
+        const match101112 = item.dezenas[9] === current101112[0] &&
+                            item.dezenas[10] === current101112[1] &&
+                            item.dezenas[11] === current101112[2];
+
+        const match131415 = item.dezenas[12] === current131415[0] &&
+                            item.dezenas[13] === current131415[1] &&
+                            item.dezenas[14] === current131415[2];
+
+        item.match123 = match123;
+        item.match456 = match456;
+        item.match789 = match789;
+        item.match101112 = match101112;
+        item.match131415 = match131415;
+        item.isPatternMatch = match123 || match456 || match789 || match101112 || match131415;
+
+        // Calculate global score: how many of the 15 shadow target numbers match dezenas
+        let hits = 0;
+        item.shadowTarget.forEach(targetNum => {
+          if (item.dezenas.includes(targetNum)) {
+            hits++;
+          }
+        });
+        item.totalHits = hits;
+
+        // Toggle state for subsequent draws on hit
+        if (match123) {
+          current123 = (current123 === patternA_123) ? patternB_123 : patternA_123;
+        }
+        if (match456) {
+          current456 = (current456 === patternA_456) ? patternB_456 : patternA_456;
+        }
+        if (match789) {
+          current789 = (current789 === patternA_789) ? patternB_789 : patternA_789;
+        }
+        if (match131415) {
+          if (current131415 === patternA_131415) {
+            current131415 = patternB_131415;
+          } else if (current131415 === patternB_131415) {
+            current131415 = patternC_131415;
+          } else if (current131415 === patternC_131415) {
+            current131415 = patternD_131415;
+          } else {
+            current131415 = patternA_131415;
+          }
+        }
+      });
+    }
+
+    function setupVirtualList() {
+      const totalHeight = filteredDraws.length * ITEM_HEIGHT;
+      spacerEl.style.height = `${totalHeight}px`;
+
+      viewportEl.removeEventListener('scroll', renderVirtualList);
+      viewportEl.addEventListener('scroll', renderVirtualList);
+
+      renderVirtualList();
+    }
+
+    function renderVirtualList() {
+      if (!filteredDraws.length) {
+        contentEl.innerHTML = '<div class="p-8 text-center text-gray-500">Nenhum concurso encontrado.</div>';
+        contentEl.style.transform = `translateY(0px)`;
+        return;
+      }
+
+      const scrollTop = viewportEl.scrollTop;
+      const viewportHeight = viewportEl.clientHeight || 600;
+
+      let startIndex = Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER_ITEMS;
+      let endIndex = Math.ceil((scrollTop + viewportHeight) / ITEM_HEIGHT) + BUFFER_ITEMS;
+
+      startIndex = Math.max(0, startIndex);
+      endIndex = Math.min(filteredDraws.length, endIndex);
+
+      const offsetY = startIndex * ITEM_HEIGHT;
+      contentEl.style.transform = `translateY(${offsetY}px)`;
+
+      const visibleItems = filteredDraws.slice(startIndex, endIndex);
+
+      contentEl.innerHTML = visibleItems.map(item => {
+        // 15 Drawn Balls (Sorted Ascending 01..25)
+        const drawnBallsHtml = item.dezenas.map(num => `
+          <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-purple-600 text-white font-semibold text-xs sm:text-sm flex items-center justify-center shadow-sm flex-shrink-0">
+            ${num}
+          </div>
+        `).join('');
+
+        // 15 Shadow Balls (12 rule-based + 3 empty)
+        let shadowBallsHtml = '';
+        for (let c = 0; c < 15; c++) {
+          if (c < 3) {
+            const targetVal = item.shadowTarget[c];
+            const isMatched = item.match123;
+            const bgClass = isMatched 
+              ? 'bg-emerald-500 text-white border-emerald-600 font-bold shadow-sm' 
+              : 'bg-purple-50 text-purple-700 border-purple-300 font-bold';
+
+            shadowBallsHtml += `
+              <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full border ${bgClass} text-xs sm:text-sm flex items-center justify-center flex-shrink-0">
+                ${targetVal}
+              </div>
+            `;
+          } else if (c >= 3 && c < 6) {
+            const targetVal = item.shadowTarget[c];
+            const isMatched = item.match456;
+            const bgClass = isMatched 
+              ? 'bg-emerald-500 text-white border-emerald-600 font-bold shadow-sm' 
+              : 'bg-indigo-50 text-indigo-700 border-indigo-300 font-bold';
+
+            shadowBallsHtml += `
+              <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full border ${bgClass} text-xs sm:text-sm flex items-center justify-center flex-shrink-0">
+                ${targetVal}
+              </div>
+            `;
+          } else if (c >= 6 && c < 9) {
+            const targetVal = item.shadowTarget[c];
+            const isMatched = item.match789;
+            const bgClass = isMatched 
+              ? 'bg-emerald-500 text-white border-emerald-600 font-bold shadow-sm' 
+              : 'bg-sky-50 text-sky-700 border-sky-300 font-bold';
+
+            shadowBallsHtml += `
+              <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full border ${bgClass} text-xs sm:text-sm flex items-center justify-center flex-shrink-0">
+                ${targetVal}
+              </div>
+            `;
+          } else if (c >= 9 && c < 12) {
+            const targetVal = item.shadowTarget[c];
+            const isMatched = item.match101112;
+            const bgClass = isMatched 
+              ? 'bg-emerald-500 text-white border-emerald-600 font-bold shadow-sm' 
+              : 'bg-amber-50 text-amber-700 border-amber-300 font-bold';
+
+            shadowBallsHtml += `
+              <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full border ${bgClass} text-xs sm:text-sm flex items-center justify-center flex-shrink-0">
+                ${targetVal}
+              </div>
+            `;
+          } else if (c >= 12 && c < 15) {
+            const targetVal = item.shadowTarget[c];
+            const isMatched = item.match131415;
+            const bgClass = isMatched 
+              ? 'bg-emerald-500 text-white border-emerald-600 font-bold shadow-sm' 
+              : 'bg-rose-50 text-rose-700 border-rose-300 font-bold';
+
+            shadowBallsHtml += `
+              <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-full border ${bgClass} text-xs sm:text-sm flex items-center justify-center flex-shrink-0">
+                ${targetVal}
+              </div>
+            `;
+          }
+        }
+
+        let matchBadges = '';
+        if (item.match123) {
+          matchBadges += `<span class="px-2 py-0.5 text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-full">Match C1-3</span> `;
+        }
+        if (item.match456) {
+          matchBadges += `<span class="px-2 py-0.5 text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800 border border-indigo-300 rounded-full">Match C4-6</span> `;
+        }
+        if (item.match789) {
+          matchBadges += `<span class="px-2 py-0.5 text-[10px] font-bold uppercase bg-sky-100 text-sky-800 border border-sky-300 rounded-full">Match C7-9</span> `;
+        }
+        if (item.match101112) {
+          matchBadges += `<span class="px-2 py-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300 rounded-full">Match C10-12</span> `;
+        }
+        if (item.match131415) {
+          matchBadges += `<span class="px-2 py-0.5 text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300 rounded-full">Match C13-15</span> `;
+        }
+
+        // Score badge generation (highlighted only for 11+ points) with delay counter
+        let scoreBadgeHtml = '';
+        if (item.totalHits >= 11) {
+          let badgeStyle = '';
+          let label = `${item.totalHits} PONTOS`;
+
+          if (item.totalHits === 11) {
+            badgeStyle = 'bg-amber-100 text-amber-900 border-amber-400 font-extrabold shadow-sm';
+          } else if (item.totalHits === 12) {
+            badgeStyle = 'bg-yellow-400 text-yellow-950 border-yellow-500 font-black shadow-sm';
+          } else if (item.totalHits === 13) {
+            badgeStyle = 'bg-orange-500 text-white border-orange-600 font-black shadow';
+            label = `🔥 ${item.totalHits} PONTOS`;
+          } else if (item.totalHits === 14) {
+            badgeStyle = 'bg-red-600 text-white border-red-700 font-black shadow-md';
+            label = `🚀 ${item.totalHits} PONTOS`;
+          } else if (item.totalHits === 15) {
+            badgeStyle = 'bg-purple-600 text-white border-purple-700 font-black shadow-lg ring-2 ring-purple-300';
+            label = `🏆 ${item.totalHits} PONTOS!`;
+          }
+
+          scoreBadgeHtml = `
+            <div class="flex flex-col items-end gap-1">
+              <span class="px-2.5 py-0.5 text-[11px] uppercase tracking-wider rounded-full border ${badgeStyle}">${label}</span>
+              <span class="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                Premiação alcançada!
+              </span>
+            </div>
+          `;
+        } else {
+          scoreBadgeHtml = `
+            <div class="flex flex-col items-end gap-1">
+              <span class="text-[10px] text-gray-400 font-normal">${item.totalHits} acertos</span>
+              <span class="text-[10px] text-amber-800 font-medium bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                Sem ≥11 pts há: <b>${item.delay}</b> ${item.delay === 1 ? 'concurso' : 'concursos'}
+              </span>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="p-3 sm:p-4 bg-white hover:bg-gray-50 transition-colors flex flex-col justify-center border-b border-gray-100 ${item.isPatternMatch ? 'bg-emerald-50/40' : ''}" style="height: ${ITEM_HEIGHT}px;">
+            <div class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 flex items-center flex-wrap gap-1.5 justify-between">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-gray-900 font-extrabold">Concurso #${item.concurso}</span>
+                ${matchBadges}
+              </div>
+              <div>
+                ${scoreBadgeHtml}
+              </div>
+            </div>
+
+            <!-- Drawn Balls Row (Sorted) -->
+            <div class="flex items-center gap-1 sm:gap-2 mb-2 overflow-x-auto pb-1">
+              ${drawnBallsHtml}
+            </div>
+
+            <!-- Shadow Balls Row -->
+            <div class="flex items-center gap-1 sm:gap-2 overflow-x-auto pb-1">
+              ${shadowBallsHtml}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    searchInputEl.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      if (!query) {
+        filteredDraws = [...allDraws];
+      } else {
+        filteredDraws = allDraws.filter(d => d.concurso.toString().includes(query));
+      }
+      viewportEl.scrollTop = 0;
+      setupVirtualList();
+    });
+
+    btnScrollTop.addEventListener('click', () => {
+      viewportEl.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    btnScrollBottom.addEventListener('click', () => {
+      viewportEl.scrollTo({ top: viewportEl.scrollHeight, behavior: 'smooth' });
+    });
+
+    function showLoading() {
+      loadingSpinnerEl.classList.remove('hidden');
+      errorMessageEl.classList.add('hidden');
+      viewportEl.classList.add('hidden');
+    }
+
+    function hideLoading() {
+      loadingSpinnerEl.classList.add('hidden');
+      errorMessageEl.classList.add('hidden');
+      viewportEl.classList.remove('hidden');
+    }
+
+    function showError() {
+      loadingSpinnerEl.classList.add('hidden');
+      errorMessageEl.classList.remove('hidden');
+      viewportEl.classList.add('hidden');
+    }
+
+    // Initialize application on window load
+    window.onload = loadLotofacilData;
+  </script>
+</body>
+</html>
